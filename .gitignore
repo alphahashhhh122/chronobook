@@ -1,0 +1,10 @@
+build/
+build-*/
+*.db
+*.db-wal
+*.db-shm
+*.journal
+*.bin
+*.exe
+*.obj
+*.lib
