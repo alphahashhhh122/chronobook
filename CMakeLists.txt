@@ -80,6 +80,9 @@ target_link_libraries(store_throughput PRIVATE chronobook)
 add_executable(pagefaults bench/pagefaults.cpp)
 target_link_libraries(pagefaults PRIVATE chronobook)
 
+add_executable(sharded_throughput bench/sharded_throughput.cpp)
+target_link_libraries(sharded_throughput PRIVATE chronobook)
+
 enable_testing()
 add_executable(test_all tests/test_all.cpp)
 target_link_libraries(test_all PRIVATE chronobook)

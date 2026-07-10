@@ -14,6 +14,7 @@
 #include "journal/FillJournal.h"
 #include "journal/DurabilityPipeline.h"
 #include "matching/ReferenceMatcher.h"
+#include "matching/ShardedEngine.h"
 #include "replay/LatencyHistogram.h"
 #include "replay/ReplayStats.h"
 #include "replay/ReplayEngine.h"
@@ -478,6 +479,106 @@ static void test_reference_matcher_diff() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ShardedEngine tests
+// ---------------------------------------------------------------------------
+static void test_sharded_single_symbol_matches_reference() {
+    // All messages share one symbol → routed to one shard. Fills must match
+    // the ReferenceMatcher exactly (proves the SPSC + threading infrastructure
+    // preserves correctness).
+    FeedConfig cfg; cfg.numMessages = 5000; cfg.seed = 555;
+    auto feed = FeedGenerator(cfg).generate();
+    // symbol stays 0 (default) for all messages
+
+    ShardedEngine sharded(4, 1u << 16, 1u << 14);
+    sharded.start();
+    for (const auto& msg : feed)
+        while (!sharded.route(msg)) std::this_thread::yield();
+    sharded.stop();
+    auto shardedFills = sharded.collectAllFills();
+
+    ReferenceMatcher ref;
+    auto refFills = ref.run(feed);
+
+    CHECK(shardedFills.size() == refFills.size());
+    for (size_t i = 0; i < shardedFills.size(); ++i) {
+        CHECK(shardedFills[i].buyOrderId  == refFills[i].buyOrderId);
+        CHECK(shardedFills[i].sellOrderId == refFills[i].sellOrderId);
+        CHECK(shardedFills[i].price       == refFills[i].price);
+        CHECK(shardedFills[i].qty         == refFills[i].qty);
+    }
+    CHECK(sharded.totalProcessed() == 5000);
+}
+
+static void test_sharded_no_cross_symbol_match() {
+    // Two symbols at the SAME price must NOT interact. If the per-symbol
+    // engine isolation is broken, these would incorrectly match.
+    std::vector<FeedMessage> feed{
+        makeAdd(1, 1, Side::SELL, OrderType::LIMIT, 100, 50, 0xAAAA),
+        makeAdd(2, 2, Side::BUY,  OrderType::LIMIT, 100, 50, 0xBBBB),
+    };
+
+    ShardedEngine sharded(2, 1024, 256);
+    sharded.start();
+    for (const auto& msg : feed)
+        while (!sharded.route(msg)) std::this_thread::yield();
+    sharded.stop();
+    auto fills = sharded.collectAllFills();
+
+    CHECK(fills.empty());  // different symbols → zero fills
+    CHECK(sharded.totalProcessed() == 2);
+}
+
+static void test_sharded_multi_symbol_independent_fills() {
+    // Two symbols, each with a crossing order. Verify each symbol produces its
+    // own fill independently and quantities/prices are correct.
+    std::vector<FeedMessage> feed{
+        makeAdd(1, 1, Side::SELL, OrderType::LIMIT, 100, 40, 0x1111),
+        makeAdd(2, 2, Side::SELL, OrderType::LIMIT, 200, 60, 0x2222),
+        makeAdd(3, 3, Side::BUY,  OrderType::LIMIT, 100, 40, 0x1111),
+        makeAdd(4, 4, Side::BUY,  OrderType::LIMIT, 200, 60, 0x2222),
+    };
+
+    ShardedEngine sharded(2, 1024, 256);
+    sharded.start();
+    for (const auto& msg : feed)
+        while (!sharded.route(msg)) std::this_thread::yield();
+    sharded.stop();
+    auto fills = sharded.collectAllFills();
+
+    CHECK(fills.size() == 2);
+    bool found100 = false, found200 = false;
+    for (const auto& f : fills) {
+        if (f.price == 100 && f.qty == 40) found100 = true;
+        if (f.price == 200 && f.qty == 60) found200 = true;
+    }
+    CHECK(found100);
+    CHECK(found200);
+}
+
+static void test_sharded_start_stop_restart() {
+    // Verify lifecycle: start → route → stop → start → route → stop.
+    ShardedEngine sharded(2, 1024, 256);
+
+    sharded.start();
+    FeedMessage msg = makeAdd(1, 1, Side::BUY, OrderType::LIMIT, 100, 10, 0xAA);
+    while (!sharded.route(msg)) std::this_thread::yield();
+    sharded.stop();
+    CHECK(sharded.totalProcessed() == 1);
+
+    // Second cycle - engines are still populated from cycle 1 but that's fine;
+    // this tests thread lifecycle, not engine state reset.
+    sharded.start();
+    msg = makeAdd(2, 2, Side::SELL, OrderType::LIMIT, 100, 10, 0xAA);
+    while (!sharded.route(msg)) std::this_thread::yield();
+    sharded.stop();
+    CHECK(sharded.totalProcessed() == 2);
+
+    auto fills = sharded.collectAllFills();
+    CHECK(fills.size() == 1);   // order 1 and 2 should cross
+    CHECK(fills[0].price == 100 && fills[0].qty == 10);
+}
+
 int main(){
     test_order(); test_pool();
     test_pricelevel(); test_orderbook();
@@ -498,6 +599,10 @@ int main(){
     test_trade_store_atomicity_and_queries();
     test_connection_pool_lease_move_and_timeout();
     test_reference_matcher_diff();
+    test_sharded_single_symbol_matches_reference();
+    test_sharded_no_cross_symbol_match();
+    test_sharded_multi_symbol_independent_fills();
+    test_sharded_start_stop_restart();
     printf("ALL %d CHECKS PASSED\n", g_tests);
     return 0;
 }
