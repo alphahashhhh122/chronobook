@@ -34,6 +34,8 @@ std::optional<std::vector<FeedMessage>> FeedParser::readFile(const std::string& 
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) return std::nullopt;
     const std::streamsize sz = f.tellg();
+    if (sz < 0) return std::nullopt;
+    if (static_cast<size_t>(sz) % kFeedMessageSize != 0) return std::nullopt;
     f.seekg(0);
     std::vector<std::byte> buf(static_cast<size_t>(sz));
     if (sz > 0 && !f.read(reinterpret_cast<char*>(buf.data()), sz)) return std::nullopt;

@@ -110,14 +110,13 @@ public:
         staged.insert(staged.end(), fills.begin(), fills.end());
         if (failBeforeCommit) throw SQLiteError("injected failure before commit");
 
-        std::ofstream out(m_path, std::ios::binary | std::ios::trunc);
-        if (!out) throw SQLiteError("open trade store failed: " + m_path);
-        const uint64_t count = static_cast<uint64_t>(staged.size());
-        out.write(reinterpret_cast<const char*>(&count), sizeof(count));
-        out.write(reinterpret_cast<const char*>(staged.data()),
-                  static_cast<std::streamsize>(staged.size() * sizeof(Fill)));
-        if (!out) throw SQLiteError("write trade store failed: " + m_path);
+        writeAll(staged);
         m_trades.swap(staged);
+    }
+
+    void replaceAll(const std::vector<Fill>& fills) {
+        writeAll(fills);
+        m_trades = fills;
     }
 
     uint64_t tradeCount() const noexcept {
@@ -142,6 +141,16 @@ public:
     const std::string& path() const noexcept { return m_path; }
 
 private:
+    void writeAll(const std::vector<Fill>& fills) {
+        std::ofstream out(m_path, std::ios::binary | std::ios::trunc);
+        if (!out) throw SQLiteError("open trade store failed: " + m_path);
+        const uint64_t count = static_cast<uint64_t>(fills.size());
+        out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        out.write(reinterpret_cast<const char*>(fills.data()),
+                  static_cast<std::streamsize>(fills.size() * sizeof(Fill)));
+        if (!out) throw SQLiteError("write trade store failed: " + m_path);
+    }
+
     void load() {
         std::ifstream in(m_path, std::ios::binary);
         if (!in) return;
@@ -581,6 +590,23 @@ public:
             stmt.stepDone();
         }
         if (failBeforeCommit) throw SQLiteError("injected failure before commit");
+        txn.commit();
+    }
+
+    void replaceAll(const std::vector<Fill>& fills) {
+        Transaction txn(m_writer);
+        m_writer.exec("DELETE FROM trades;");
+        auto& stmt = m_cache.get(
+            "INSERT INTO trades(buy_order_id,sell_order_id,price,qty,ts) VALUES(?,?,?,?,?);");
+        for (const auto& f : fills) {
+            stmt.reset();
+            stmt.bindInt64(1, f.buyOrderId);
+            stmt.bindInt64(2, f.sellOrderId);
+            stmt.bindInt(3, static_cast<int>(f.price));
+            stmt.bindInt(4, static_cast<int>(f.qty));
+            stmt.bindInt64(5, f.timestamp);
+            stmt.stepDone();
+        }
         txn.commit();
     }
 

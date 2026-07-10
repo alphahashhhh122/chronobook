@@ -24,6 +24,8 @@
 #include <cstdio>
 #include <thread>
 #include <cmath>
+#include <fstream>
+#include <random>
 
 using namespace chronobook;
 
@@ -154,6 +156,37 @@ static void test_parser_and_partial_frame() {
     parsed=FeedParser::parseBuffer(bytes.data(),bytes.size(),&consumed);
     CHECK(parsed.size()==3 && consumed==3*kFeedMessageSize);
 }
+static void test_feed_validation_and_strict_file_read() {
+    CHECK(isValidFeedMessage(makeAdd(1,1,Side::BUY,OrderType::LIMIT,100,10,0)));
+    FeedMessage badSide = makeAdd(1,1,Side::BUY,OrderType::LIMIT,100,10,0);
+    badSide.side = 99;
+    CHECK(!isValidFeedMessage(badSide));
+    FeedMessage badType = makeAdd(1,1,Side::BUY,OrderType::LIMIT,100,10,0);
+    badType.orderType = 99;
+    CHECK(!isValidFeedMessage(badType));
+    FeedMessage zeroQty = makeAdd(1,1,Side::BUY,OrderType::LIMIT,100,0,0);
+    CHECK(!isValidFeedMessage(zeroQty));
+    FeedMessage zeroPrice = makeAdd(1,1,Side::BUY,OrderType::LIMIT,0,10,0);
+    CHECK(!isValidFeedMessage(zeroPrice));
+
+    std::vector<FeedMessage> feed{badSide, makeAdd(2,2,Side::BUY,OrderType::LIMIT,100,10,0)};
+    OrderPool pool(8); MatchingEngine engine(pool); ReplayEngine replay(engine, pool);
+    auto stats = replay.run(feed, ReplayMode::NORMAL);
+    CHECK(stats.invalidMessages == 1);
+    CHECK(stats.messages == 1);
+    CHECK(engine.getBook().getBestBid() == 100);
+
+    const char* path = "chronobook_partial_feed.bin";
+    std::remove(path);
+    CHECK(FeedParser::writeFile(path, std::vector<FeedMessage>{makeCancel(1,1)}));
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::app);
+        const char extra[3]{'x','y','z'};
+        out.write(extra, sizeof(extra));
+    }
+    CHECK(!FeedParser::readFile(path));
+    std::remove(path);
+}
 static void test_queue_basic() {
     ThreadSafeQueue<int> q;
     q.push(1); q.push(2); q.push(3);
@@ -246,6 +279,17 @@ static void test_replay_max_throughput() {
     CHECK(st.messages==50000);
     CHECK(st.throughputMsgsPerSec()>0.0);
 }
+static void test_replay_pool_exhaustion_is_counted() {
+    std::vector<FeedMessage> feed{
+        makeAdd(1,1,Side::BUY,OrderType::LIMIT,100,10,0),
+        makeAdd(2,2,Side::BUY,OrderType::LIMIT, 99,10,0)
+    };
+    OrderPool pool(1); MatchingEngine engine(pool); ReplayEngine replay(engine, pool);
+    auto stats = replay.run(feed, ReplayMode::NORMAL);
+    CHECK(stats.messages == 2);
+    CHECK(stats.droppedAdds == 1);
+    CHECK(engine.getBook().getBestBid() == 100);
+}
 // producer-consumer feeding the engine == single-threaded result
 static void test_producer_consumer_equiv() {
     FeedConfig cfg; cfg.numMessages=15000; cfg.seed=2024;
@@ -327,6 +371,24 @@ static void test_fill_journal_roundtrip() {
     std::remove(path);
 }
 
+static void test_fill_journal_rejects_bad_magic() {
+    const char* path = "chronobook_bad_magic.journal";
+    std::remove(path);
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        const char bytes[32]{'n','o','t','-','a','-','j','o','u','r','n','a','l'};
+        out.write(bytes, sizeof(bytes));
+    }
+    bool threw = false;
+    try {
+        FillJournal journal(path, 8);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    std::remove(path);
+}
+
 static void test_durability_pipeline_spsc_to_journal_and_store() {
     const char* journalPath = "chronobook_pipeline.journal";
     const char* storePath = "chronobook_pipeline.db";
@@ -381,6 +443,31 @@ static void test_recovery_reconciles_feed_journal_and_store() {
     CHECK(report.journalFills == 3);
     CHECK(report.storeTrades == 3);
     CHECK(std::fabs(report.replayVwap - report.storeVwap) < 1e-9);
+
+    std::remove(journalPath);
+    cleanup_db(storePath);
+}
+
+static void test_recovery_rebuilds_store_from_journal() {
+    const char* journalPath = "chronobook_rebuild.journal";
+    const char* storePath = "chronobook_rebuild.db";
+    std::remove(journalPath);
+    cleanup_db(storePath);
+
+    std::vector<Fill> canonical{{1,2,100,10,1}, {3,4,110,30,2}};
+    {
+        FillJournal journal(journalPath, 8);
+        journal.appendBatch(canonical);
+    }
+    {
+        TradeStore store(storePath);
+        store.insertBatch(std::vector<Fill>{{99,100,999,1,99}});
+    }
+
+    CHECK(RecoveryReconciler::rebuildStoreFromJournal(journalPath, storePath) == 2);
+    TradeStore rebuilt(storePath);
+    CHECK(rebuilt.tradeCount() == 2);
+    CHECK(std::fabs(rebuilt.vwap(1,2) - 107.5) < 1e-9);
 
     std::remove(journalPath);
     cleanup_db(storePath);
@@ -478,6 +565,80 @@ static void test_reference_matcher_diff() {
     }
 }
 
+static std::vector<Fill> fast_match(const std::vector<FeedMessage>& feed) {
+    OrderPool pool(feed.size() + 1024);
+    MatchingEngine engine(pool);
+    std::vector<Fill> out;
+    for (const auto& msg : feed) {
+        if (!isValidFeedMessage(msg)) continue;
+        if (msg.msgType == MsgType::ADD) {
+            Order* o = pool.allocate();
+            o->orderId = msg.orderId; o->symbolPacked = msg.symbolPacked;
+            o->price = msg.price; o->qty = msg.qty; o->filledQty = 0;
+            o->side = static_cast<Side>(msg.side);
+            o->type = static_cast<OrderType>(msg.orderType);
+            engine.processOrder(o, msg.sequence);
+        } else if (msg.msgType == MsgType::CANCEL) {
+            engine.cancelOrder(msg.orderId);
+        } else {
+            engine.modifyOrder(msg.orderId, msg.price, msg.qty, msg.sequence);
+        }
+        auto batch = engine.drainFills();
+        out.insert(out.end(), batch.begin(), batch.end());
+    }
+    return out;
+}
+
+static void test_reference_matcher_randomized_diff() {
+    for (uint64_t seed = 1; seed <= 25; ++seed) {
+        std::mt19937_64 rng(seed);
+        std::uniform_int_distribution<int> sideDist(0, 1);
+        std::uniform_int_distribution<int> priceDist(95, 105);
+        std::uniform_int_distribution<int> qtyDist(1, 50);
+        std::uniform_int_distribution<int> rollDist(0, 99);
+        std::vector<uint64_t> candidates;
+        std::vector<FeedMessage> feed;
+        uint64_t nextId = 1;
+        for (uint64_t seq = 1; seq <= 1200; ++seq) {
+            const int roll = rollDist(rng);
+            if (!candidates.empty() && roll < 18) {
+                std::uniform_int_distribution<size_t> pick(0, candidates.size() - 1);
+                const size_t idx = pick(rng);
+                feed.push_back(makeCancel(seq, candidates[idx]));
+                candidates[idx] = candidates.back();
+                candidates.pop_back();
+            } else if (!candidates.empty() && roll < 30) {
+                std::uniform_int_distribution<size_t> pick(0, candidates.size() - 1);
+                feed.push_back(makeModify(seq, candidates[pick(rng)],
+                                          static_cast<uint32_t>(priceDist(rng)),
+                                          static_cast<uint32_t>(qtyDist(rng))));
+            } else {
+                const Side side = sideDist(rng) == 0 ? Side::BUY : Side::SELL;
+                OrderType type = OrderType::LIMIT;
+                if (roll >= 90) type = OrderType::MARKET;
+                else if (roll >= 82) type = OrderType::IOC;
+                const uint64_t id = nextId++;
+                feed.push_back(makeAdd(seq, id, side, type,
+                                       type == OrderType::MARKET ? 0u : static_cast<uint32_t>(priceDist(rng)),
+                                       static_cast<uint32_t>(qtyDist(rng)), 0));
+                if (type == OrderType::LIMIT) candidates.push_back(id);
+            }
+        }
+
+        ReferenceMatcher ref;
+        auto slow = ref.run(feed);
+        auto fast = fast_match(feed);
+        CHECK(fast.size() == slow.size());
+        for (size_t i = 0; i < fast.size(); ++i) {
+            CHECK(fast[i].buyOrderId == slow[i].buyOrderId);
+            CHECK(fast[i].sellOrderId == slow[i].sellOrderId);
+            CHECK(fast[i].price == slow[i].price);
+            CHECK(fast[i].qty == slow[i].qty);
+            CHECK(fast[i].timestamp == slow[i].timestamp);
+        }
+    }
+}
+
 int main(){
     test_order(); test_pool();
     test_pricelevel(); test_orderbook();
@@ -485,19 +646,24 @@ int main(){
     test_match_partial_and_fifo(); test_match_rest_and_nomatch();
     test_market_and_ioc(); test_cancel_after_partial();
     test_protocol_roundtrip(); test_parser_and_partial_frame();
+    test_feed_validation_and_strict_file_read();
     test_queue_basic(); test_queue_concurrent();
     test_generator_determinism();
     test_running_stats(); test_analytics_imbalance();
     test_replay_determinism(); test_replay_modify_preserves_side();
     test_replay_max_throughput();
+    test_replay_pool_exhaustion_is_counted();
     test_producer_consumer_equiv();
     test_spsc_ring_concurrent(); test_latency_histogram();
     test_fill_journal_roundtrip();
+    test_fill_journal_rejects_bad_magic();
     test_durability_pipeline_spsc_to_journal_and_store();
     test_recovery_reconciles_feed_journal_and_store();
+    test_recovery_rebuilds_store_from_journal();
     test_trade_store_atomicity_and_queries();
     test_connection_pool_lease_move_and_timeout();
     test_reference_matcher_diff();
+    test_reference_matcher_randomized_diff();
     printf("ALL %d CHECKS PASSED\n", g_tests);
     return 0;
 }

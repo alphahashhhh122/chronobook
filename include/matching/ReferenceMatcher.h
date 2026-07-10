@@ -14,7 +14,9 @@ public:
     std::vector<Fill> run(const std::vector<FeedMessage>& feed) {
         m_book.clear();
         m_fills.clear();
-        for (const auto& msg : feed) apply(msg);
+        for (const auto& msg : feed) {
+            if (isValidFeedMessage(msg)) apply(msg);
+        }
         return m_fills;
     }
 

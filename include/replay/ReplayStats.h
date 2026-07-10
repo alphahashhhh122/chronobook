@@ -42,6 +42,8 @@ struct ReplayStats {
     uint64_t cancels{0};
     uint64_t modifies{0};
     uint64_t cancelMisses{0};   // cancels for ids not resting (filled/never-rested)
+    uint64_t invalidMessages{0};
+    uint64_t droppedAdds{0};    // pool exhausted in non-strict replay mode
     uint64_t fills{0};
     uint64_t matchedVolume{0};  // total qty traded
     double   elapsedSeconds{0.0};

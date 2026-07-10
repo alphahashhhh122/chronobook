@@ -42,6 +42,8 @@ public:
         fills.reserve(feed.size() / 2);
 
         for (const auto& msg : feed) {
+            if (!isValidFeedMessage(msg))
+                throw std::runtime_error("invalid feed message during recovery replay");
             if (msg.msgType == MsgType::ADD) {
                 Order* order = pool.allocate();
                 if (!order) throw std::runtime_error("recovery replay pool exhausted");
@@ -85,6 +87,20 @@ public:
         report.storeVwap = store.vwap(beginTs, endTs);
         report.storeVwapMatches = std::fabs(report.replayVwap - report.storeVwap) < 1e-9;
         return report;
+    }
+
+    static size_t rebuildStoreFromJournal(const std::string& journalPath,
+                                          const std::string& storePath) {
+        const auto records = FillJournal::replay(journalPath);
+        std::vector<Fill> fills;
+        fills.reserve(records.size());
+        for (const auto& record : records) {
+            fills.push_back(Fill{record.buyOrderId, record.sellOrderId,
+                                 record.price, record.qty, record.timestamp});
+        }
+        TradeStore store(storePath);
+        store.replaceAll(fills);
+        return fills.size();
     }
 
 private:

@@ -6,7 +6,7 @@
 // is O(1) pointer surgery (4 cases). No allocation, ever.
 //
 // totalQty invariant: it is decremented exactly once per matched unit - either
-// by the engine's adjustTotalQty(-matchQty) during a partial fill, or by
+// by the engine's decreaseTotalQty(matchQty) during a partial fill, or by
 // removeOrder() subtracting the order's *current* remainingQty() on cancel /
 // full fill. A fully-consumed order's remainingQty() is already 0, so
 // removeOrder() subtracts 0 and never double-counts.
@@ -41,7 +41,10 @@ public:
     }
 
     // Used by the match loop for partial resting fills (engine owns this call).
-    void adjustTotalQty(int64_t delta) noexcept { m_totalQty += delta; }
+    void decreaseTotalQty(uint32_t qty) noexcept {
+        if (qty > m_totalQty) m_totalQty = 0;
+        else m_totalQty -= qty;
+    }
 
     Order*   front()         const noexcept { return m_head; }
     bool     isEmpty()       const noexcept { return m_head == nullptr; }

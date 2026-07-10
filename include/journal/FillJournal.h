@@ -52,11 +52,13 @@ public:
     FillJournal& operator=(const FillJournal&) = delete;
 
     void append(const Fill& fill) {
-        if (m_header->records >= m_header->capacity)
+        const uint64_t idx = m_header->records;
+        if (idx >= m_header->capacity)
             throw std::runtime_error("fill journal full: " + m_path);
         const FillRecord r{fill.buyOrderId, fill.sellOrderId,
                            fill.price, fill.qty, fill.timestamp};
-        m_records[m_header->records++] = r;
+        m_records[idx] = r;
+        m_header->records = idx + 1;
     }
 
     void appendBatch(const std::vector<Fill>& fills) {
@@ -157,13 +159,15 @@ private:
     }
 
     void initializeOrValidateHeader() {
-        if (m_newFile || m_header->magic != kMagic) {
+        if (m_newFile) {
             std::memset(m_base, 0, m_fileBytes);
             m_header->magic = kMagic;
             m_header->records = 0;
             m_header->capacity = static_cast<uint64_t>(m_capacity);
             return;
         }
+        if (m_header->magic != kMagic)
+            throw std::runtime_error("invalid fill journal magic: " + m_path);
         if (m_header->capacity != m_capacity)
             throw std::runtime_error("fill journal capacity mismatch: " + m_path);
         if (m_header->records > m_header->capacity)

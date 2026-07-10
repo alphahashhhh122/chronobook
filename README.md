@@ -20,8 +20,11 @@ I/O, database work, or downstream analytics.
 - Deterministic binary feed generation, parsing, and replay.
 - Memory-mapped append-only fill journal and queryable trade projection.
 - Optional SPSC durability pipeline from drained fills into journal + store.
-- Event-sourced recovery reconciler for feed replay, journal, and store output.
+- Event-sourced recovery reconciler for feed replay, journal, and store output,
+  including store rebuild from the journal.
 - Reference matcher used as a slower correctness oracle.
+- Feed validation for malformed message types, sides, order types, zero
+  quantities, and impossible limit/IOC prices.
 - CMake targets for tests, replay tools, and benchmark executables.
 
 ## Architecture
@@ -55,7 +58,8 @@ Core components:
 - `DurabilityPipeline` consumes fill batches through an SPSC ring and persists
   them to the journal and trade projection off the matching path.
 - `RecoveryReconciler` replays the deterministic feed and checks that recovered
-  fills match the journal and trade-store projection.
+  fills match the journal and trade-store projection. The journal is treated as
+  the source of truth for rebuilding the read-side store after a store failure.
 - `TradeStore` batches fills into a queryable projection and exposes VWAP and
   time-range query helpers.
 - `ConnectionPool` uses move-only leases so read-side handles return safely to
@@ -96,7 +100,9 @@ The tests cover order layout, allocator reuse, price-level FIFO behavior,
 matching semantics, parser framing, deterministic replay, queue handoff,
 analytics, latency histograms, mmap journal replay, SPSC durability pipeline,
 feed/journal/store recovery reconciliation, trade-store rollback, connection
-lease behavior, and reference-matcher differential output.
+lease behavior, malformed feed rejection, pool-exhaustion accounting, journal
+header validation, journal-to-store rebuild, and randomized reference-matcher
+differential output.
 
 ## Benchmark Targets
 

@@ -102,7 +102,7 @@ void MatchingEngine::matchOneSide(Order* incoming, bool respectPrice) {
             std::min(incoming->remainingQty(), resting->remainingQty());
 
         executeTrade(resting, incoming, restPrice, matchQty);
-        level->adjustTotalQty(-static_cast<int64_t>(matchQty));
+        level->decreaseTotalQty(matchQty);
 
         if (CB_UNLIKELY(resting->isFilled())) {
             m_book.removeOrder(resting);
