@@ -12,6 +12,16 @@ The hot lane owns matching correctness and latency. It uses integer ticks,
 intrusive lists, sorted price maps, an id hash, a slab allocator, and an SPSC
 queue. It does not perform persistence.
 
+Sharded hot lane:
+
+```text
+gateway -> SPSC shard queues -> per-shard worker -> per-symbol MatchingEngine
+```
+
+`ShardedEngine` partitions messages by `symbolPacked`. Each shard has its own
+worker thread, order pool, and map of per-symbol matching engines. This prevents
+cross-symbol matching and keeps mutable order-book state private to one worker.
+
 Persistence lane:
 
 ```text
@@ -48,6 +58,8 @@ condition-variable fallback for non-Linux builds.
 - Binary feed messages are validated before enum casts reach the matching path.
 - Pool exhaustion is counted explicitly instead of being hidden inside replay
   results.
+- In the sharded path, a symbol is owned by one shard and matched by that
+  shard's per-symbol engine; different symbols cannot cross-match.
 
 ## Correctness Story
 
@@ -55,6 +67,8 @@ Unit tests check hand-computable scenarios first. Deterministic replay checks
 repeatability. `ReferenceMatcher` is a slow vector-based oracle; differential
 tests assert the fast engine emits the same fill sequence as the simple matcher,
 including randomized feeds with ADD/CANCEL/MODIFY, market orders, and IOC.
+Sharded tests check single-symbol equivalence, no cross-symbol matching,
+independent fills across symbols, and worker start/stop lifecycle.
 
 ## Measurement Story
 
@@ -65,6 +79,8 @@ The benchmarks separate throughput from per-operation latency:
 - `spsc_vs_mutex` compares the Week-3 mutex baseline with the SPSC handoff.
 - `futex_vs_cv` compares semaphore strategies.
 - `store_throughput` measures batched persistence throughput.
+- `sharded_throughput` compares single-threaded per-symbol matching with
+  sharded SPSC-backed worker routing.
 
 Do not quote smoke results as universal latency. Pin the CPU, warm up the run,
 record hardware/OS/compiler, and report negative results honestly.

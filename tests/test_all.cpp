@@ -14,6 +14,7 @@
 #include "journal/FillJournal.h"
 #include "journal/DurabilityPipeline.h"
 #include "matching/ReferenceMatcher.h"
+#include "matching/ShardedEngine.h"
 #include "replay/LatencyHistogram.h"
 #include "replay/ReplayStats.h"
 #include "replay/ReplayEngine.h"
@@ -639,6 +640,97 @@ static void test_reference_matcher_randomized_diff() {
     }
 }
 
+static void test_sharded_single_symbol_matches_reference() {
+    FeedConfig cfg; cfg.numMessages = 5000; cfg.seed = 555;
+    auto feed = FeedGenerator(cfg).generate();
+
+    ShardedEngine sharded(4, 1u << 16, 1u << 14);
+    sharded.start();
+    for (const auto& msg : feed) {
+        while (!sharded.route(msg)) std::this_thread::yield();
+    }
+    sharded.stop();
+    auto shardedFills = sharded.collectAllFills();
+
+    ReferenceMatcher ref;
+    auto refFills = ref.run(feed);
+
+    CHECK(shardedFills.size() == refFills.size());
+    for (size_t i = 0; i < shardedFills.size(); ++i) {
+        CHECK(shardedFills[i].buyOrderId == refFills[i].buyOrderId);
+        CHECK(shardedFills[i].sellOrderId == refFills[i].sellOrderId);
+        CHECK(shardedFills[i].price == refFills[i].price);
+        CHECK(shardedFills[i].qty == refFills[i].qty);
+        CHECK(shardedFills[i].timestamp == refFills[i].timestamp);
+    }
+    CHECK(sharded.totalProcessed() == feed.size());
+}
+
+static void test_sharded_no_cross_symbol_match() {
+    std::vector<FeedMessage> feed{
+        makeAdd(1, 1, Side::SELL, OrderType::LIMIT, 100, 50, 0xAAAA),
+        makeAdd(2, 2, Side::BUY,  OrderType::LIMIT, 100, 50, 0xBBBB),
+    };
+
+    ShardedEngine sharded(2, 1024, 256);
+    sharded.start();
+    for (const auto& msg : feed) {
+        while (!sharded.route(msg)) std::this_thread::yield();
+    }
+    sharded.stop();
+    auto fills = sharded.collectAllFills();
+
+    CHECK(fills.empty());
+    CHECK(sharded.totalProcessed() == 2);
+}
+
+static void test_sharded_multi_symbol_independent_fills() {
+    std::vector<FeedMessage> feed{
+        makeAdd(1, 1, Side::SELL, OrderType::LIMIT, 100, 40, 0x1111),
+        makeAdd(2, 2, Side::SELL, OrderType::LIMIT, 200, 60, 0x2222),
+        makeAdd(3, 3, Side::BUY,  OrderType::LIMIT, 100, 40, 0x1111),
+        makeAdd(4, 4, Side::BUY,  OrderType::LIMIT, 200, 60, 0x2222),
+    };
+
+    ShardedEngine sharded(2, 1024, 256);
+    sharded.start();
+    for (const auto& msg : feed) {
+        while (!sharded.route(msg)) std::this_thread::yield();
+    }
+    sharded.stop();
+    auto fills = sharded.collectAllFills();
+
+    CHECK(fills.size() == 2);
+    bool found100 = false;
+    bool found200 = false;
+    for (const auto& f : fills) {
+        if (f.price == 100 && f.qty == 40) found100 = true;
+        if (f.price == 200 && f.qty == 60) found200 = true;
+    }
+    CHECK(found100);
+    CHECK(found200);
+}
+
+static void test_sharded_start_stop_restart() {
+    ShardedEngine sharded(2, 1024, 256);
+
+    sharded.start();
+    FeedMessage msg = makeAdd(1, 1, Side::BUY, OrderType::LIMIT, 100, 10, 0xAA);
+    while (!sharded.route(msg)) std::this_thread::yield();
+    sharded.stop();
+    CHECK(sharded.totalProcessed() == 1);
+
+    sharded.start();
+    msg = makeAdd(2, 2, Side::SELL, OrderType::LIMIT, 100, 10, 0xAA);
+    while (!sharded.route(msg)) std::this_thread::yield();
+    sharded.stop();
+    CHECK(sharded.totalProcessed() == 2);
+
+    auto fills = sharded.collectAllFills();
+    CHECK(fills.size() == 1);
+    CHECK(fills[0].price == 100 && fills[0].qty == 10);
+}
+
 int main(){
     test_order(); test_pool();
     test_pricelevel(); test_orderbook();
@@ -664,6 +756,10 @@ int main(){
     test_connection_pool_lease_move_and_timeout();
     test_reference_matcher_diff();
     test_reference_matcher_randomized_diff();
+    test_sharded_single_symbol_matches_reference();
+    test_sharded_no_cross_symbol_match();
+    test_sharded_multi_symbol_independent_fills();
+    test_sharded_start_stop_restart();
     printf("ALL %d CHECKS PASSED\n", g_tests);
     return 0;
 }

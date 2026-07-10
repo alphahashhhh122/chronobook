@@ -17,6 +17,9 @@ Use this file as the source of truth before pasting ChronoBook onto a resume.
 - Lock-free SPSC ring buffer.
 - Acquire/release atomics.
 - Cache-line-padded head/tail indices.
+- Sharded multi-symbol matching layer with one worker thread per shard and
+  per-symbol `MatchingEngine` instances.
+- Tests prove different symbols do not cross-match in the sharded path.
 - rdtscp latency benchmark executable.
 - Thread-affinity pinning executable path.
 - Assert-based correctness suite passes on the current 64-bit Windows build.
@@ -32,6 +35,8 @@ Use this file as the source of truth before pasting ChronoBook onto a resume.
   reinitializing them.
 - The trade projection can be rebuilt from the append-only fill journal.
 - Randomized reference-matcher differential tests are part of the local suite.
+- Sharded throughput benchmark target exists for multi-symbol routing
+  experiments.
 
 ## Not Safe Yet
 
@@ -45,28 +50,28 @@ Use this file as the source of truth before pasting ChronoBook onto a resume.
   WSL has no installed Linux distribution.
 - Real SQLite execution: the path exists, but the available Windows sqlite DLL is
   not a reliable standalone C API target in this environment.
+- "Near-linear sharded scaling": the benchmark harness exists, but scaling
+  numbers are machine-dependent and should not be quoted without saved repeated
+  runs.
 
 ## Resume-Safe Version
 
 ```text
-C++17, CMake, low-latency data structures, deterministic replay
+ChronoBook - C++17 Low-Latency Matching Engine
 
-• Built an exchange-style matching engine with price-time priority, fixed-point
-integer prices, a custom slab/free-list allocator with RAII ownership, intrusive
-linked-list price levels, software prefetch in the match loop, and O(1) cancel
-lookup via unordered_map; supports Limit, Market, and IOC orders with partial
-fills.
-
-• Implemented a lock-free SPSC ring buffer using acquire/release atomics and
-cache-line-padded head/tail indices; added deterministic binary feed replay,
-microstructure analytics, an append-only fill journal, and a reference matcher
-for differential correctness testing.
-
-• Added feed validation, explicit replay failure counters, journal/store
-recovery checks, randomized reference-matcher differential tests, and
-rdtscp-based latency benchmarking with warm-up and thread-affinity pinning;
-current 64-bit Windows Release build passes the assert-based correctness suite
-and benchmark smoke runs.
+* Engineered a C++17 matching engine with price-time priority, fixed-point
+  integer prices, intrusive FIFO price levels, RAII slab/free-list allocation,
+  sorted bid/ask maps, and average O(1) cancel via an order-id hash index.
+* Implemented exchange-style Limit/Market/IOC order flow with partial fills,
+  cancel/modify handling, deterministic seeded feed replay, logical-sequence
+  fills, malformed-feed validation, and reference-matcher differential tests.
+* Added sharded multi-symbol routing with one worker thread per shard,
+  SPSC-backed inboxes, per-symbol MatchingEngine instances, and tests covering
+  single-symbol equivalence, no cross-symbol matching, independent fills, and
+  worker lifecycle.
+* Built an off-critical-path durability lane through a lock-free SPSC ring into
+  a memory-mapped append-only journal and queryable TradeStore projection; added
+  recovery reconciliation, rdtscp latency histograms, and benchmark targets.
 ```
 
 ## Upgrade Needed Before Using The Original Version

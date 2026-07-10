@@ -17,6 +17,8 @@ I/O, database work, or downstream analytics.
 - Reusable slab/free-list order allocator with RAII cleanup.
 - Lock-free SPSC ring buffer benchmark using acquire/release atomics and
   cache-line padded indices.
+- Optional sharded multi-symbol matching layer with one worker thread per shard
+  and per-symbol `MatchingEngine` instances, so symbols do not cross-match.
 - Deterministic binary feed generation, parsing, and replay.
 - Memory-mapped append-only fill journal and queryable trade projection.
 - Optional SPSC durability pipeline from drained fills into journal + store.
@@ -51,6 +53,9 @@ Core components:
 - `PriceLevel` owns the FIFO queue for one price using pointers embedded inside
   `Order`, so no extra list node allocation is needed.
 - `MatchingEngine` owns matching semantics and emits value-type `Fill` records.
+- `ShardedEngine` routes feed messages by `symbolPacked` into SPSC-backed shard
+  workers. Each shard owns private per-symbol matching engines, avoiding shared
+  mutable book state between shards.
 - `SPSCRingBuffer` is a lock-free one-producer/one-consumer handoff primitive
   with a mutex queue comparison benchmark.
 - `FillJournal` writes fixed-size binary fill records through a memory-mapped
@@ -101,8 +106,8 @@ matching semantics, parser framing, deterministic replay, queue handoff,
 analytics, latency histograms, mmap journal replay, SPSC durability pipeline,
 feed/journal/store recovery reconciliation, trade-store rollback, connection
 lease behavior, malformed feed rejection, pool-exhaustion accounting, journal
-header validation, journal-to-store rebuild, and randomized reference-matcher
-differential output.
+header validation, journal-to-store rebuild, randomized reference-matcher
+differential output, and sharded multi-symbol isolation.
 
 ## Benchmark Targets
 
@@ -113,19 +118,20 @@ differential output.
 ./build/Release/futex_vs_cv.exe
 ./build/Release/store_throughput.exe
 ./build/Release/pagefaults.exe
+./build/Release/sharded_throughput.exe 1000000 64
 ```
 
 The benchmarks cover SPSC-vs-mutex handoff throughput, deterministic replay
 throughput, per-operation `rdtscp` latency, semaphore behavior, page-fault
-effects, and trade-store insert/query throughput. Results are machine-dependent;
-the programs print the command-line workload and measured rates so runs can be
-recorded with the environment that produced them.
+effects, trade-store insert/query throughput, and sharded multi-symbol routing.
+Results are machine-dependent; the programs print the command-line workload and
+measured rates so runs can be recorded with the environment that produced them.
 
 ## Repository Layout
 
 ```text
 include/core/       order records, slab pool, price levels, order book
-include/matching/   matching engine and reference matcher
+include/matching/   matching engine, sharded engine, reference matcher
 include/feed/       binary feed protocol, parser, deterministic generator
 include/infra/      queues, SPSC ring, semaphore primitives
 include/journal/    mmap fill journal, durability pipeline, replay helpers
