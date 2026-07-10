@@ -53,6 +53,8 @@ static void assignSymbols(std::vector<FeedMessage>& feed,
 static double runBaseline(const std::vector<FeedMessage>& feed, size_t poolCap) {
     OrderPool pool(poolCap);
     std::unordered_map<uint64_t, std::unique_ptr<MatchingEngine>> engines;
+    std::vector<Fill> scratch;
+    scratch.reserve(1u << 16);
 
     const auto t0 = std::chrono::steady_clock::now();
     for (const auto& msg : feed) {
@@ -82,7 +84,7 @@ static double runBaseline(const std::vector<FeedMessage>& feed, size_t poolCap) 
         } else {
             engine.modifyOrder(msg.orderId, msg.price, msg.qty, msg.sequence);
         }
-        engine.drainFills();
+        engine.drainFillsInto(scratch);
     }
     const auto t1 = std::chrono::steady_clock::now();
     return std::chrono::duration<double>(t1 - t0).count();
