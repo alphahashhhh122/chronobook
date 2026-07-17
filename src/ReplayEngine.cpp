@@ -4,6 +4,11 @@
 namespace chronobook {
 
 size_t ReplayEngine::applyMessage(const FeedMessage& m, ReplayStats& stats) {
+    if (!isValidFeedMessage(m)) {
+        ++stats.invalidMessages;
+        return 0;
+    }
+
     ++stats.messages;
     size_t fillsThisMsg = 0;
 
@@ -11,8 +16,10 @@ size_t ReplayEngine::applyMessage(const FeedMessage& m, ReplayStats& stats) {
         case MsgType::ADD: {
             ++stats.adds;
             Order* o = m_pool.allocate();
-            // capacity guard: in a real system you'd backpressure; here we drop.
-            if (!o) return 0;
+            if (!o) {
+                ++stats.droppedAdds;
+                return 0;
+            }
             o->orderId      = m.orderId;
             o->symbolPacked = m.symbolPacked;
             o->price        = m.price;

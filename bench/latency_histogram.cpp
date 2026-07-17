@@ -41,6 +41,7 @@ static bool pinCurrentThreadToCpu0() noexcept {
 }
 
 static void applyMessage(const FeedMessage& m, MatchingEngine& engine, OrderPool& pool) {
+    if (!isValidFeedMessage(m)) return;
     if (m.msgType == MsgType::ADD) {
         Order* o = pool.allocate();
         if (!o) return;
@@ -54,6 +55,8 @@ static void applyMessage(const FeedMessage& m, MatchingEngine& engine, OrderPool
         engine.processOrder(o, m.sequence);
     } else if (m.msgType == MsgType::CANCEL) {
         engine.cancelOrder(m.orderId);
+    } else if (m.msgType == MsgType::MODIFY) {
+        engine.modifyOrder(m.orderId, m.price, m.qty, m.sequence);
     }
     engine.drainFills();
 }

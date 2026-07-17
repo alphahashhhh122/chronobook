@@ -42,6 +42,8 @@ public:
         fills.reserve(feed.size() / 2);
 
         for (const auto& msg : feed) {
+            if (!isValidFeedMessage(msg))
+                throw std::runtime_error("invalid feed message during recovery replay");
             if (msg.msgType == MsgType::ADD) {
                 Order* order = pool.allocate();
                 if (!order) throw std::runtime_error("recovery replay pool exhausted");
@@ -87,6 +89,21 @@ public:
         return report;
     }
 
+    static size_t rebuildStoreFromJournal(const std::string& journalPath,
+                                          const std::string& storePath) {
+        const auto records = FillJournal::replay(journalPath);
+        std::vector<Fill> fills;
+        fills.reserve(records.size());
+        for (const auto& record : records) {
+            fills.push_back(Fill{record.buyOrderId, record.sellOrderId,
+                                 record.price, record.qty, record.timestamp,
+                                 record.symbolPacked});
+        }
+        TradeStore store(storePath);
+        store.replaceAll(fills);
+        return fills.size();
+    }
+
 private:
     static bool sameFills(const std::vector<Fill>& fills,
                           const std::vector<FillRecord>& records) {
@@ -96,7 +113,8 @@ private:
                 fills[i].sellOrderId != records[i].sellOrderId ||
                 fills[i].price != records[i].price ||
                 fills[i].qty != records[i].qty ||
-                fills[i].timestamp != records[i].timestamp) {
+                fills[i].timestamp != records[i].timestamp ||
+                fills[i].symbolPacked != records[i].symbolPacked) {
                 return false;
             }
         }

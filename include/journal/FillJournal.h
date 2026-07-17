@@ -28,9 +28,10 @@ struct FillRecord {
     uint32_t price{0};
     uint32_t qty{0};
     uint64_t timestamp{0};
+    uint64_t symbolPacked{0};
 };
 
-static_assert(sizeof(FillRecord) == 32, "FillRecord is a fixed 32-byte record");
+static_assert(sizeof(FillRecord) == 40, "FillRecord is a fixed 40-byte record");
 
 class FillJournal {
 public:
@@ -52,11 +53,14 @@ public:
     FillJournal& operator=(const FillJournal&) = delete;
 
     void append(const Fill& fill) {
-        if (m_header->records >= m_header->capacity)
+        const uint64_t idx = m_header->records;
+        if (idx >= m_header->capacity)
             throw std::runtime_error("fill journal full: " + m_path);
         const FillRecord r{fill.buyOrderId, fill.sellOrderId,
-                           fill.price, fill.qty, fill.timestamp};
-        m_records[m_header->records++] = r;
+                           fill.price, fill.qty, fill.timestamp,
+                           fill.symbolPacked};
+        m_records[idx] = r;
+        m_header->records = idx + 1;
     }
 
     void appendBatch(const std::vector<Fill>& fills) {
@@ -106,7 +110,7 @@ private:
         uint64_t capacity{0};
     };
 
-    static constexpr uint64_t kMagic = 0x314a46424f4e4843ULL; // "CHNOBFJ1" little-endian marker
+    static constexpr uint64_t kMagic = 0x324a46424f4e4843ULL; // "CHNOBFJ2" little-endian marker
 
     void openMapping() {
         m_fileBytes = sizeof(Header) + m_capacity * sizeof(FillRecord);
@@ -157,13 +161,15 @@ private:
     }
 
     void initializeOrValidateHeader() {
-        if (m_newFile || m_header->magic != kMagic) {
+        if (m_newFile) {
             std::memset(m_base, 0, m_fileBytes);
             m_header->magic = kMagic;
             m_header->records = 0;
             m_header->capacity = static_cast<uint64_t>(m_capacity);
             return;
         }
+        if (m_header->magic != kMagic)
+            throw std::runtime_error("invalid fill journal magic: " + m_path);
         if (m_header->capacity != m_capacity)
             throw std::runtime_error("fill journal capacity mismatch: " + m_path);
         if (m_header->records > m_header->capacity)

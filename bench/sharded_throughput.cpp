@@ -5,8 +5,8 @@
 //   1. Baseline: single-threaded per-symbol matching (no SPSC overhead)
 //   2. ShardedEngine with 1, 2, and 4 shards
 //
-// Expected: near-linear scaling with shard count because shards share no
-// mutable state and the matching hot path is the bottleneck.
+// Use the output as a workload-specific smoke benchmark; scaling depends on
+// hardware, symbol distribution, compiler, and thread scheduling.
 
 #include "feed/FeedGenerator.h"
 #include "matching/MatchingEngine.h"
@@ -17,16 +17,15 @@
 #include <cstdlib>
 #include <memory>
 #include <random>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
 using namespace chronobook;
 
-// ---------------------------------------------------------------------------
 // Assign distinct symbols to a feed so messages distribute across shards.
 // Cancels and modifies inherit the symbol of their target ADD, ensuring they
 // route to the same shard.
-// ---------------------------------------------------------------------------
 static void assignSymbols(std::vector<FeedMessage>& feed,
                           size_t numSymbols, uint64_t seed = 99) {
     std::mt19937_64 rng(seed);
@@ -47,9 +46,7 @@ static void assignSymbols(std::vector<FeedMessage>& feed,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Baseline: single-threaded, per-symbol matching (no SPSC ring overhead).
-// ---------------------------------------------------------------------------
+// Baseline: single-threaded, per-symbol matching with no SPSC ring overhead.
 static double runBaseline(const std::vector<FeedMessage>& feed, size_t poolCap) {
     OrderPool pool(poolCap);
     std::unordered_map<uint64_t, std::unique_ptr<MatchingEngine>> engines;
@@ -58,6 +55,7 @@ static double runBaseline(const std::vector<FeedMessage>& feed, size_t poolCap) 
 
     const auto t0 = std::chrono::steady_clock::now();
     for (const auto& msg : feed) {
+        if (!isValidFeedMessage(msg)) continue;
         auto it = engines.find(msg.symbolPacked);
         if (it == engines.end()) {
             auto [ins, ok] = engines.emplace(
@@ -90,9 +88,7 @@ static double runBaseline(const std::vector<FeedMessage>& feed, size_t poolCap) 
     return std::chrono::duration<double>(t1 - t0).count();
 }
 
-// ---------------------------------------------------------------------------
 // Sharded: N worker threads, messages routed by symbol hash.
-// ---------------------------------------------------------------------------
 static double runSharded(const std::vector<FeedMessage>& feed,
                          size_t numShards, size_t poolCapPerShard,
                          bool pin) {

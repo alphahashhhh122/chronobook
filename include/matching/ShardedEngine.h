@@ -1,24 +1,21 @@
 #pragma once
 // ShardedEngine.h
 //
-// Symbol-partitioned matching: a gateway thread routes each incoming message by
+// Symbol-partitioned matching: the caller routes each incoming message by
 // symbol hash into one of N shard threads, each of which owns a private set of
-// per-symbol MatchingEngines fed through a lock-free SPSC ring. This is the
-// CME Globex / LMAX scaling pattern: shards share NO mutable state, so there
-// are no locks on the matching hot path, and throughput scales near-linearly
-// with the number of cores.
+// per-symbol MatchingEngines fed through a lock-free SPSC ring. Shards share no
+// mutable book state, keeping each order book owned by exactly one worker.
 //
-// Within each shard, messages are processed in FIFO order (guaranteed by the
-// SPSC ring), preserving per-symbol determinism. Different symbols on the same
-// shard each get their own MatchingEngine, so orders never cross-match across
-// symbols.
+// Within each shard, messages are processed in FIFO order, preserving
+// per-symbol determinism. Different symbols on the same shard each get their
+// own MatchingEngine, so orders never cross-match across symbols.
 //
 // Thread topology:
 //
 //   Gateway (caller)                    shard 0
-//       |--- SPSC[0] ----> worker[0] ─> per-symbol MatchingEngines
-//       |--- SPSC[1] ----> worker[1] ─> per-symbol MatchingEngines
-//       |--- SPSC[N] ----> worker[N] ─> per-symbol MatchingEngines
+//       |--- SPSC[0] ----> worker[0] --> per-symbol MatchingEngines
+//       |--- SPSC[1] ----> worker[1] --> per-symbol MatchingEngines
+//       |--- SPSC[N] ----> worker[N] --> per-symbol MatchingEngines
 //
 // Lifetime: start() spawns worker threads; stop() signals shutdown, drains
 // remaining messages, and joins. collectAllFills() is valid after stop().
@@ -29,6 +26,7 @@
 #include "infra/SPSCRingBuffer.h"
 #include "matching/MatchingEngine.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -49,9 +47,9 @@ namespace chronobook {
 
 class ShardedEngine {
 public:
-    // numShards:          number of worker threads (typically = number of cores)
-    // poolCapPerShard:    Order slab-pool capacity per shard
-    // ringCapacity:       SPSC ring capacity per shard (must be > 0)
+    // numShards:          number of worker threads
+    // poolCapPerShard:    order slab-pool capacity per shard
+    // ringCapacity:       SPSC ring capacity per shard
     explicit ShardedEngine(size_t numShards,
                            size_t poolCapPerShard = 1u << 16,
                            size_t ringCapacity = 1u << 14)
@@ -70,7 +68,7 @@ public:
     ShardedEngine& operator=(const ShardedEngine&) = delete;
 
     // Spawn one worker thread per shard. If pinThreads is true, each worker is
-    // pinned to core i (Linux: sched_setaffinity; Windows: SetThreadAffinityMask).
+    // pinned to core i.
     void start(bool pinThreads = false) {
         bool expected = false;
         if (!m_running.compare_exchange_strong(expected, true)) return;
@@ -95,7 +93,7 @@ public:
     }
 
     // Route a single message to the shard that owns its symbol. Returns false
-    // if the shard's ring is full (caller should spin/yield and retry).
+    // if the shard's ring is full.
     bool route(const FeedMessage& msg) noexcept {
         const size_t idx = shardIndex(msg.symbolPacked);
         return m_shards[idx]->inbox.tryPush(msg);
@@ -111,10 +109,8 @@ public:
         return routed;
     }
 
-    // Collect fills from all shards. Call AFTER stop() - not thread-safe while
-    // workers are running. Returns fills in timestamp order; stable sort so
-    // fills at the same timestamp keep their per-shard production order (e.g.
-    // a multi-level sweep produces several fills at the same sequence number).
+    // Call after stop(). Returns fills in timestamp order; stable sort keeps
+    // same-timestamp fills in per-shard production order.
     std::vector<Fill> collectAllFills() {
         std::vector<Fill> all;
         for (auto& s : m_shards)
@@ -126,7 +122,6 @@ public:
         return all;
     }
 
-    // Total messages processed across all shards (safe to read while running).
     uint64_t totalProcessed() const noexcept {
         uint64_t total = 0;
         for (const auto& s : m_shards)
@@ -141,16 +136,12 @@ public:
     size_t numShards() const noexcept { return m_numShards; }
 
 private:
-    // Each shard owns a private OrderPool and a map of per-symbol matching
-    // engines. The map is only touched by the shard's own worker thread, so no
-    // synchronization is needed. The shared pool is fine because the worker is
-    // the only allocator/deallocator for orders on this shard.
     struct Shard {
         SPSCRingBuffer<FeedMessage> inbox;
         OrderPool pool;
         std::unordered_map<uint64_t, std::unique_ptr<MatchingEngine>> engines;
-        std::vector<Fill> fills;            // accumulated by worker, read after join
-        std::vector<Fill> fillScratch;      // reusable drain buffer (avoids alloc)
+        std::vector<Fill> fills;
+        std::vector<Fill> fillScratch;
 
         alignas(64) std::atomic<uint64_t> processed{0};
         alignas(64) std::atomic<bool> stopFlag{false};
@@ -163,8 +154,6 @@ private:
         }
     };
 
-    // Splittable hash: mix the packed symbol with a multiply-shift so that
-    // sequential symbol ids (1, 2, 3, ...) spread evenly across shards.
     size_t shardIndex(uint64_t symbolPacked) const noexcept {
         uint64_t h = symbolPacked;
         h ^= h >> 33;
@@ -173,7 +162,6 @@ private:
         return static_cast<size_t>(h % m_numShards);
     }
 
-    // Look up or create the MatchingEngine for this symbol on this shard.
     MatchingEngine& getEngine(uint64_t symbol, Shard& shard) {
         auto it = shard.engines.find(symbol);
         if (CB_LIKELY(it != shard.engines.end())) return *it->second;
@@ -194,8 +182,6 @@ private:
                 std::this_thread::yield();
             }
         }
-        // Final drain: inbox may have received messages between the stop-flag
-        // check and the empty() check above.
         while (shard.inbox.tryPop(msg)) {
             applyMessage(msg, shard);
             shard.processed.fetch_add(1, std::memory_order_relaxed);
@@ -203,6 +189,7 @@ private:
     }
 
     void applyMessage(const FeedMessage& msg, Shard& shard) {
+        if (CB_UNLIKELY(!isValidFeedMessage(msg))) return;
         MatchingEngine& engine = getEngine(msg.symbolPacked, shard);
         if (msg.msgType == MsgType::ADD) {
             Order* order = shard.pool.allocate();
@@ -220,7 +207,6 @@ private:
         } else {
             engine.modifyOrder(msg.orderId, msg.price, msg.qty, msg.sequence);
         }
-        // Drain fills from this engine into the shard's fill buffer.
         engine.drainFillsInto(shard.fillScratch);
         if (!shard.fillScratch.empty()) {
             shard.fills.insert(shard.fills.end(),

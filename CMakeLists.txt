@@ -28,7 +28,6 @@ endif()
 if(CHRONOBOOK_ENABLE_ASAN_UBSAN)
   if(MSVC)
     add_compile_options(/fsanitize=address)
-    add_link_options(/fsanitize=address)
   else()
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=address,undefined)
@@ -87,6 +86,34 @@ enable_testing()
 add_executable(test_all tests/test_all.cpp)
 target_link_libraries(test_all PRIVATE chronobook)
 add_test(NAME test_all COMMAND test_all)
+
+set(CHRONOBOOK_EXECUTABLE_TARGETS
+  feed_generator
+  trade_query
+  replay_demo
+  latency_histogram
+  spsc_vs_mutex
+  futex_vs_cv
+  store_throughput
+  pagefaults
+  sharded_throughput
+  test_all)
+
+if(MSVC AND CHRONOBOOK_ENABLE_ASAN_UBSAN)
+  get_filename_component(CHRONOBOOK_MSVC_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  set(CHRONOBOOK_ASAN_DLLS
+    "${CHRONOBOOK_MSVC_BIN_DIR}/clang_rt.asan_dynamic-x86_64.dll"
+    "${CHRONOBOOK_MSVC_BIN_DIR}/clang_rt.asan_dbg_dynamic-x86_64.dll")
+  foreach(target ${CHRONOBOOK_EXECUTABLE_TARGETS})
+    foreach(dll ${CHRONOBOOK_ASAN_DLLS})
+      if(EXISTS "${dll}")
+        add_custom_command(TARGET ${target} POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${dll}" "$<TARGET_FILE_DIR:${target}>")
+      endif()
+    endforeach()
+  endforeach()
+endif()
 
 if(WIN32 AND CHRONOBOOK_USE_DYNAMIC_SQLITE)
   set(CHRONOBOOK_SQLITE_DLL "$ENV{USERPROFILE}/sqlite3.dll"

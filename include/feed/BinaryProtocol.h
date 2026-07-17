@@ -83,4 +83,36 @@ inline FeedMessage makeModify(uint64_t seq, uint64_t id, uint32_t newPrice,
     return m;
 }
 
+inline bool isValidMsgType(MsgType type) noexcept {
+    return type == MsgType::ADD || type == MsgType::CANCEL || type == MsgType::MODIFY;
+}
+
+inline bool isValidSide(uint8_t side) noexcept {
+    return side == static_cast<uint8_t>(Side::BUY) ||
+           side == static_cast<uint8_t>(Side::SELL);
+}
+
+inline bool isValidOrderType(uint8_t type) noexcept {
+    return type == static_cast<uint8_t>(OrderType::LIMIT) ||
+           type == static_cast<uint8_t>(OrderType::MARKET) ||
+           type == static_cast<uint8_t>(OrderType::IOC);
+}
+
+inline bool isValidFeedMessage(const FeedMessage& m) noexcept {
+    if (!isValidMsgType(m.msgType) || m.orderId == 0) return false;
+    switch (m.msgType) {
+        case MsgType::ADD:
+            if (!isValidSide(m.side) || !isValidOrderType(m.orderType) || m.qty == 0)
+                return false;
+            if (m.orderType != static_cast<uint8_t>(OrderType::MARKET) && m.price == 0)
+                return false;
+            return true;
+        case MsgType::CANCEL:
+            return true;
+        case MsgType::MODIFY:
+            return m.price != 0 && m.qty != 0;
+    }
+    return false;
+}
+
 } // namespace chronobook

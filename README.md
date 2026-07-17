@@ -17,11 +17,16 @@ I/O, database work, or downstream analytics.
 - Reusable slab/free-list order allocator with RAII cleanup.
 - Lock-free SPSC ring buffer benchmark using acquire/release atomics and
   cache-line padded indices.
+- Optional sharded multi-symbol matching layer with one worker thread per shard
+  and per-symbol `MatchingEngine` instances, so symbols do not cross-match.
 - Deterministic binary feed generation, parsing, and replay.
 - Memory-mapped append-only fill journal and queryable trade projection.
 - Optional SPSC durability pipeline from drained fills into journal + store.
-- Event-sourced recovery reconciler for feed replay, journal, and store output.
+- Event-sourced recovery reconciler for feed replay, journal, and store output,
+  including store rebuild from the journal.
 - Reference matcher used as a slower correctness oracle.
+- Feed validation for malformed message types, sides, order types, zero
+  quantities, and impossible limit/IOC prices.
 - CMake targets for tests, replay tools, and benchmark executables.
 
 ## Architecture
@@ -48,6 +53,9 @@ Core components:
 - `PriceLevel` owns the FIFO queue for one price using pointers embedded inside
   `Order`, so no extra list node allocation is needed.
 - `MatchingEngine` owns matching semantics and emits value-type `Fill` records.
+- `ShardedEngine` routes feed messages by `symbolPacked` into SPSC-backed shard
+  workers. Each shard owns private per-symbol matching engines, avoiding shared
+  mutable book state between shards.
 - `SPSCRingBuffer` is a lock-free one-producer/one-consumer handoff primitive
   with a mutex queue comparison benchmark.
 - `FillJournal` writes fixed-size binary fill records through a memory-mapped
@@ -55,7 +63,8 @@ Core components:
 - `DurabilityPipeline` consumes fill batches through an SPSC ring and persists
   them to the journal and trade projection off the matching path.
 - `RecoveryReconciler` replays the deterministic feed and checks that recovered
-  fills match the journal and trade-store projection.
+  fills match the journal and trade-store projection. The journal is treated as
+  the source of truth for rebuilding the read-side store after a store failure.
 - `TradeStore` batches fills into a queryable projection and exposes VWAP and
   time-range query helpers.
 - `ConnectionPool` uses move-only leases so read-side handles return safely to
@@ -96,7 +105,9 @@ The tests cover order layout, allocator reuse, price-level FIFO behavior,
 matching semantics, parser framing, deterministic replay, queue handoff,
 analytics, latency histograms, mmap journal replay, SPSC durability pipeline,
 feed/journal/store recovery reconciliation, trade-store rollback, connection
-lease behavior, and reference-matcher differential output.
+lease behavior, malformed feed rejection, pool-exhaustion accounting, journal
+header validation, journal-to-store rebuild, randomized reference-matcher
+differential output, and sharded multi-symbol isolation.
 
 ## Benchmark Targets
 
@@ -107,19 +118,20 @@ lease behavior, and reference-matcher differential output.
 ./build/Release/futex_vs_cv.exe
 ./build/Release/store_throughput.exe
 ./build/Release/pagefaults.exe
+./build/Release/sharded_throughput.exe 1000000 64
 ```
 
 The benchmarks cover SPSC-vs-mutex handoff throughput, deterministic replay
 throughput, per-operation `rdtscp` latency, semaphore behavior, page-fault
-effects, and trade-store insert/query throughput. Results are machine-dependent;
-the programs print the command-line workload and measured rates so runs can be
-recorded with the environment that produced them.
+effects, trade-store insert/query throughput, and sharded multi-symbol routing.
+Results are machine-dependent; the programs print the command-line workload and
+measured rates so runs can be recorded with the environment that produced them.
 
 ## Repository Layout
 
 ```text
 include/core/       order records, slab pool, price levels, order book
-include/matching/   matching engine and reference matcher
+include/matching/   matching engine, sharded engine, reference matcher
 include/feed/       binary feed protocol, parser, deterministic generator
 include/infra/      queues, SPSC ring, semaphore primitives
 include/journal/    mmap fill journal, durability pipeline, replay helpers

@@ -11,7 +11,9 @@ template <typename T>
 class SPSCRingBuffer {
 public:
     explicit SPSCRingBuffer(size_t capacity)
-        : m_slots(capacity + 1), m_capacity(capacity + 1) {}
+        : m_capacity(nextPowerOfTwo(capacity + 1)),
+          m_mask(m_capacity - 1),
+          m_slots(m_capacity) {}
 
     SPSCRingBuffer(const SPSCRingBuffer&) = delete;
     SPSCRingBuffer& operator=(const SPSCRingBuffer&) = delete;
@@ -51,10 +53,18 @@ private:
         std::atomic<size_t> value{0};
     };
 
-    size_t increment(size_t i) const noexcept { return (i + 1) % m_capacity; }
+    static size_t nextPowerOfTwo(size_t n) noexcept {
+        if (n <= 2) return 2;
+        --n;
+        for (size_t shift = 1; shift < sizeof(size_t) * 8; shift <<= 1) n |= n >> shift;
+        return n + 1;
+    }
 
-    std::vector<T> m_slots;
+    size_t increment(size_t i) const noexcept { return (i + 1) & m_mask; }
+
     size_t m_capacity{0};
+    size_t m_mask{0};
+    std::vector<T> m_slots;
     PaddedIndex m_head;
     PaddedIndex m_tail;
 };
