@@ -1,4 +1,4 @@
-// ChronoBook test suite - assert-based and dependency-free.
+﻿// ChronoBook test suite - assert-based and dependency-free.
 // Covers matching, replay, persistence, queues, and benchmark helpers.
 #include "core/Order.h"
 #include "core/OrderPool.h"

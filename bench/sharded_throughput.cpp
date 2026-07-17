@@ -23,11 +23,9 @@
 
 using namespace chronobook;
 
-// ---------------------------------------------------------------------------
 // Assign distinct symbols to a feed so messages distribute across shards.
 // Cancels and modifies inherit the symbol of their target ADD, ensuring they
 // route to the same shard.
-// ---------------------------------------------------------------------------
 static void assignSymbols(std::vector<FeedMessage>& feed,
                           size_t numSymbols, uint64_t seed = 99) {
     std::mt19937_64 rng(seed);
@@ -48,9 +46,7 @@ static void assignSymbols(std::vector<FeedMessage>& feed,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Baseline: single-threaded, per-symbol matching (no SPSC ring overhead).
-// ---------------------------------------------------------------------------
+// Baseline: single-threaded, per-symbol matching with no SPSC ring overhead.
 static double runBaseline(const std::vector<FeedMessage>& feed, size_t poolCap) {
     OrderPool pool(poolCap);
     std::unordered_map<uint64_t, std::unique_ptr<MatchingEngine>> engines;
@@ -92,9 +88,7 @@ static double runBaseline(const std::vector<FeedMessage>& feed, size_t poolCap) 
     return std::chrono::duration<double>(t1 - t0).count();
 }
 
-// ---------------------------------------------------------------------------
 // Sharded: N worker threads, messages routed by symbol hash.
-// ---------------------------------------------------------------------------
 static double runSharded(const std::vector<FeedMessage>& feed,
                          size_t numShards, size_t poolCapPerShard,
                          bool pin) {
