@@ -19,6 +19,7 @@ struct Fill {
     uint32_t price{0};      // ticks
     uint32_t qty{0};
     uint64_t timestamp{0};  // logical feed sequence number
+    uint64_t symbolPacked{0};
 };
 
 class MatchingEngine {

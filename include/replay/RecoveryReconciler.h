@@ -96,7 +96,8 @@ public:
         fills.reserve(records.size());
         for (const auto& record : records) {
             fills.push_back(Fill{record.buyOrderId, record.sellOrderId,
-                                 record.price, record.qty, record.timestamp});
+                                 record.price, record.qty, record.timestamp,
+                                 record.symbolPacked});
         }
         TradeStore store(storePath);
         store.replaceAll(fills);
@@ -112,7 +113,8 @@ private:
                 fills[i].sellOrderId != records[i].sellOrderId ||
                 fills[i].price != records[i].price ||
                 fills[i].qty != records[i].qty ||
-                fills[i].timestamp != records[i].timestamp) {
+                fills[i].timestamp != records[i].timestamp ||
+                fills[i].symbolPacked != records[i].symbolPacked) {
                 return false;
             }
         }

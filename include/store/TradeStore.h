@@ -107,20 +107,29 @@ public:
 
     void insertBatch(const std::vector<Fill>& fills, bool failBeforeCommit = false) {
         std::vector<Fill> staged = m_trades;
+        auto stagedBySymbol = m_bySymbol;
         staged.insert(staged.end(), fills.begin(), fills.end());
+        indexRange(staged, stagedBySymbol, m_trades.size(), staged.size());
         if (failBeforeCommit) throw SQLiteError("injected failure before commit");
 
         writeAll(staged);
         m_trades.swap(staged);
+        m_bySymbol.swap(stagedBySymbol);
     }
 
     void replaceAll(const std::vector<Fill>& fills) {
         writeAll(fills);
         m_trades = fills;
+        rebuildIndex();
     }
 
     uint64_t tradeCount() const noexcept {
         return static_cast<uint64_t>(m_trades.size());
+    }
+
+    uint64_t tradeCount(uint64_t symbolPacked) const noexcept {
+        auto it = m_bySymbol.find(symbolPacked);
+        return it == m_bySymbol.end() ? 0 : static_cast<uint64_t>(it->second.size());
     }
 
     double vwap(uint64_t beginTs, uint64_t endTs) const noexcept {
@@ -132,6 +141,35 @@ public:
             qty += f.qty;
         }
         return qty == 0 ? 0.0 : static_cast<double>(notional / qty);
+    }
+
+    double vwap(uint64_t symbolPacked, uint64_t beginTs, uint64_t endTs) const noexcept {
+        auto it = m_bySymbol.find(symbolPacked);
+        if (it == m_bySymbol.end()) return 0.0;
+        long double notional = 0.0;
+        uint64_t qty = 0;
+        for (size_t idx : it->second) {
+            const auto& f = m_trades[idx];
+            if (f.timestamp < beginTs || f.timestamp > endTs) continue;
+            notional += static_cast<long double>(f.price) * f.qty;
+            qty += f.qty;
+        }
+        return qty == 0 ? 0.0 : static_cast<double>(notional / qty);
+    }
+
+    std::vector<Fill> timeline(uint64_t symbolPacked,
+                               uint64_t beginTs = 0,
+                               uint64_t endTs = UINT64_MAX) const {
+        std::vector<Fill> out;
+        auto it = m_bySymbol.find(symbolPacked);
+        if (it == m_bySymbol.end()) return out;
+        out.reserve(it->second.size());
+        for (size_t idx : it->second) {
+            const auto& f = m_trades[idx];
+            if (f.timestamp < beginTs || f.timestamp > endTs) continue;
+            out.push_back(f);
+        }
+        return out;
     }
 
     std::string explainPlan() const {
@@ -161,10 +199,25 @@ private:
         in.read(reinterpret_cast<char*>(m_trades.data()),
                 static_cast<std::streamsize>(m_trades.size() * sizeof(Fill)));
         if (!in) throw SQLiteError("truncated trade store: " + m_path);
+        rebuildIndex();
+    }
+
+    static void indexRange(const std::vector<Fill>& trades,
+                           std::unordered_map<uint64_t, std::vector<size_t>>& bySymbol,
+                           size_t begin,
+                           size_t end) {
+        for (size_t i = begin; i < end; ++i)
+            bySymbol[trades[i].symbolPacked].push_back(i);
+    }
+
+    void rebuildIndex() {
+        m_bySymbol.clear();
+        indexRange(m_trades, m_bySymbol, 0, m_trades.size());
     }
 
     std::string m_path;
     std::vector<Fill> m_trades;
+    std::unordered_map<uint64_t, std::vector<size_t>> m_bySymbol;
 };
 
 class ConnectionPool;
@@ -570,23 +623,26 @@ public:
                   "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                   "buy_order_id INTEGER NOT NULL,"
                   "sell_order_id INTEGER NOT NULL,"
+                  "symbol INTEGER NOT NULL,"
                   "price INTEGER NOT NULL,"
                   "qty INTEGER NOT NULL,"
                   "ts INTEGER NOT NULL);");
+        conn.exec("CREATE INDEX IF NOT EXISTS idx_trades_symbol_ts ON trades(symbol, ts);");
         conn.exec("CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);");
     }
 
     void insertBatch(const std::vector<Fill>& fills, bool failBeforeCommit = false) {
         Transaction txn(m_writer);
         auto& stmt = m_cache.get(
-            "INSERT INTO trades(buy_order_id,sell_order_id,price,qty,ts) VALUES(?,?,?,?,?);");
+            "INSERT INTO trades(buy_order_id,sell_order_id,symbol,price,qty,ts) VALUES(?,?,?,?,?,?);");
         for (const auto& f : fills) {
             stmt.reset();
             stmt.bindInt64(1, f.buyOrderId);
             stmt.bindInt64(2, f.sellOrderId);
-            stmt.bindInt(3, static_cast<int>(f.price));
-            stmt.bindInt(4, static_cast<int>(f.qty));
-            stmt.bindInt64(5, f.timestamp);
+            stmt.bindInt64(3, f.symbolPacked);
+            stmt.bindInt(4, static_cast<int>(f.price));
+            stmt.bindInt(5, static_cast<int>(f.qty));
+            stmt.bindInt64(6, f.timestamp);
             stmt.stepDone();
         }
         if (failBeforeCommit) throw SQLiteError("injected failure before commit");
@@ -597,14 +653,15 @@ public:
         Transaction txn(m_writer);
         m_writer.exec("DELETE FROM trades;");
         auto& stmt = m_cache.get(
-            "INSERT INTO trades(buy_order_id,sell_order_id,price,qty,ts) VALUES(?,?,?,?,?);");
+            "INSERT INTO trades(buy_order_id,sell_order_id,symbol,price,qty,ts) VALUES(?,?,?,?,?,?);");
         for (const auto& f : fills) {
             stmt.reset();
             stmt.bindInt64(1, f.buyOrderId);
             stmt.bindInt64(2, f.sellOrderId);
-            stmt.bindInt(3, static_cast<int>(f.price));
-            stmt.bindInt(4, static_cast<int>(f.qty));
-            stmt.bindInt64(5, f.timestamp);
+            stmt.bindInt64(3, f.symbolPacked);
+            stmt.bindInt(4, static_cast<int>(f.price));
+            stmt.bindInt(5, static_cast<int>(f.qty));
+            stmt.bindInt64(6, f.timestamp);
             stmt.stepDone();
         }
         txn.commit();
@@ -615,6 +672,12 @@ public:
         return stmt.stepRow() ? stmt.columnUInt64(0) : 0;
     }
 
+    uint64_t tradeCount(uint64_t symbolPacked) {
+        auto& stmt = m_cache.get("SELECT COUNT(*) FROM trades WHERE symbol=?;");
+        stmt.bindInt64(1, symbolPacked);
+        return stmt.stepRow() ? stmt.columnUInt64(0) : 0;
+    }
+
     double vwap(uint64_t beginTs, uint64_t endTs) {
         auto& stmt = m_cache.get(
             "SELECT COALESCE(SUM(price * qty) * 1.0 / NULLIF(SUM(qty),0),0) "
@@ -622,6 +685,35 @@ public:
         stmt.bindInt64(1, beginTs);
         stmt.bindInt64(2, endTs);
         return stmt.stepRow() ? stmt.columnDouble(0) : 0.0;
+    }
+
+    double vwap(uint64_t symbolPacked, uint64_t beginTs, uint64_t endTs) {
+        auto& stmt = m_cache.get(
+            "SELECT COALESCE(SUM(price * qty) * 1.0 / NULLIF(SUM(qty),0),0) "
+            "FROM trades WHERE symbol=? AND ts BETWEEN ? AND ?;");
+        stmt.bindInt64(1, symbolPacked);
+        stmt.bindInt64(2, beginTs);
+        stmt.bindInt64(3, endTs);
+        return stmt.stepRow() ? stmt.columnDouble(0) : 0.0;
+    }
+
+    std::vector<Fill> timeline(uint64_t symbolPacked,
+                               uint64_t beginTs = 0,
+                               uint64_t endTs = UINT64_MAX) {
+        auto& stmt = m_cache.get(
+            "SELECT buy_order_id,sell_order_id,price,qty,ts,symbol "
+            "FROM trades WHERE symbol=? AND ts BETWEEN ? AND ? ORDER BY ts,id;");
+        stmt.bindInt64(1, symbolPacked);
+        stmt.bindInt64(2, beginTs);
+        stmt.bindInt64(3, endTs);
+        std::vector<Fill> out;
+        while (stmt.stepRow()) {
+            out.push_back(Fill{stmt.columnUInt64(0), stmt.columnUInt64(1),
+                               static_cast<uint32_t>(stmt.columnUInt64(2)),
+                               static_cast<uint32_t>(stmt.columnUInt64(3)),
+                               stmt.columnUInt64(4), stmt.columnUInt64(5)});
+        }
+        return out;
     }
 
     std::string explainPlan() {

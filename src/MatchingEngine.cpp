@@ -68,6 +68,7 @@ void MatchingEngine::executeTrade(Order* resting, Order* incoming,
     f.price = matchPrice;
     f.qty = matchQty;
     f.timestamp = m_currentSeq;
+    f.symbolPacked = incoming->symbolPacked;
     m_fills.push_back(f);
 }
 

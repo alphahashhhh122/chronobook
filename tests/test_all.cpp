@@ -354,14 +354,14 @@ static void test_fill_journal_roundtrip() {
     std::remove(path);
     {
         FillJournal journal(path, 8);
-        journal.append(Fill{1,2,100,10,7});
-        journal.append(Fill{3,4,101,20,8});
+        journal.append(Fill{1,2,100,10,7,0xAAAA});
+        journal.append(Fill{3,4,101,20,8,0xBBBB});
         journal.flush();
     }
     {
         FillJournal journal(path, 8);
         CHECK(journal.recordsWritten() == 2);
-        journal.append(Fill{5,6,102,30,9});
+        journal.append(Fill{5,6,102,30,9,0xAAAA});
         journal.flush();
     }
     auto records = FillJournal::replay(path);
@@ -369,6 +369,7 @@ static void test_fill_journal_roundtrip() {
     CHECK(records[0].buyOrderId == 1 && records[0].sellOrderId == 2);
     CHECK(records[1].price == 101 && records[1].qty == 20);
     CHECK(records[2].sellOrderId == 6 && records[2].timestamp == 9);
+    CHECK(records[0].symbolPacked == 0xAAAA && records[1].symbolPacked == 0xBBBB);
     std::remove(path);
 }
 
@@ -398,7 +399,7 @@ static void test_durability_pipeline_spsc_to_journal_and_store() {
     {
         DurabilityPipeline pipe(journalPath, storePath, 16, 16, 2);
         pipe.start();
-        std::vector<Fill> fills{{1,2,100,10,1}, {3,4,105,20,2}};
+        std::vector<Fill> fills{{1,2,100,10,1,0xAAAA}, {3,4,105,20,2,0xBBBB}};
         CHECK(pipe.publishBatch(fills)==2);
         pipe.stop();
         CHECK(pipe.error().empty());
@@ -409,7 +410,9 @@ static void test_durability_pipeline_spsc_to_journal_and_store() {
     CHECK(records[0].price==100 && records[1].qty==20);
     TradeStore store(storePath);
     CHECK(store.tradeCount()==2);
+    CHECK(store.tradeCount(0xAAAA)==1);
     CHECK(std::fabs(store.vwap(1,2)-103.33333333333333)<1e-9);
+    CHECK(std::fabs(store.vwap(0xBBBB,1,2)-105.0)<1e-9);
     std::remove(journalPath);
     cleanup_db(storePath);
 }
@@ -455,7 +458,7 @@ static void test_recovery_rebuilds_store_from_journal() {
     std::remove(journalPath);
     cleanup_db(storePath);
 
-    std::vector<Fill> canonical{{1,2,100,10,1}, {3,4,110,30,2}};
+    std::vector<Fill> canonical{{1,2,100,10,1,0xCAFE}, {3,4,110,30,2,0xCAFE}};
     {
         FillJournal journal(journalPath, 8);
         journal.appendBatch(canonical);
@@ -468,6 +471,7 @@ static void test_recovery_rebuilds_store_from_journal() {
     CHECK(RecoveryReconciler::rebuildStoreFromJournal(journalPath, storePath) == 2);
     TradeStore rebuilt(storePath);
     CHECK(rebuilt.tradeCount() == 2);
+    CHECK(rebuilt.tradeCount(0xCAFE) == 2);
     CHECK(std::fabs(rebuilt.vwap(1,2) - 107.5) < 1e-9);
 
     std::remove(journalPath);
@@ -486,18 +490,24 @@ static void test_trade_store_atomicity_and_queries() {
     const char* path = "chronobook_test.db";
     cleanup_db(path);
     TradeStore store(path);
-    std::vector<Fill> fills{{1,2,100,10,1}, {3,4,200,30,2}};
+    std::vector<Fill> fills{{1,2,100,10,1,0xAAAA}, {3,4,200,30,2,0xBBBB}};
     store.insertBatch(fills);
     CHECK(store.tradeCount() == 2);
+    CHECK(store.tradeCount(0xAAAA) == 1);
+    CHECK(store.tradeCount(0xBBBB) == 1);
     CHECK(std::fabs(store.vwap(1, 2) - 175.0) < 1e-9);
+    CHECK(std::fabs(store.vwap(0xAAAA, 1, 2) - 100.0) < 1e-9);
+    auto aaTimeline = store.timeline(0xAAAA);
+    CHECK(aaTimeline.size() == 1 && aaTimeline[0].buyOrderId == 1);
     bool threw = false;
     try {
-        store.insertBatch(std::vector<Fill>{{5,6,999,99,3}}, true);
+        store.insertBatch(std::vector<Fill>{{5,6,999,99,3,0xAAAA}}, true);
     } catch (const SQLiteError&) {
         threw = true;
     }
     CHECK(threw);
     CHECK(store.tradeCount() == 2);
+    CHECK(store.tradeCount(0xAAAA) == 1);
     CHECK(store.explainPlan().find("idx_trades_ts") != std::string::npos ||
           store.explainPlan().find("SEARCH") != std::string::npos);
     cleanup_db(path);
@@ -560,6 +570,7 @@ static void test_reference_matcher_diff() {
     for (size_t i = 0; i < fast.size(); ++i) {
         CHECK(fast[i].buyOrderId == slow[i].buyOrderId);
         CHECK(fast[i].sellOrderId == slow[i].sellOrderId);
+        CHECK(fast[i].symbolPacked == slow[i].symbolPacked);
         CHECK(fast[i].price == slow[i].price);
         CHECK(fast[i].qty == slow[i].qty);
         CHECK(fast[i].timestamp == slow[i].timestamp);
@@ -633,6 +644,7 @@ static void test_reference_matcher_randomized_diff() {
         for (size_t i = 0; i < fast.size(); ++i) {
             CHECK(fast[i].buyOrderId == slow[i].buyOrderId);
             CHECK(fast[i].sellOrderId == slow[i].sellOrderId);
+            CHECK(fast[i].symbolPacked == slow[i].symbolPacked);
             CHECK(fast[i].price == slow[i].price);
             CHECK(fast[i].qty == slow[i].qty);
             CHECK(fast[i].timestamp == slow[i].timestamp);
@@ -659,6 +671,7 @@ static void test_sharded_single_symbol_matches_reference() {
     for (size_t i = 0; i < shardedFills.size(); ++i) {
         CHECK(shardedFills[i].buyOrderId == refFills[i].buyOrderId);
         CHECK(shardedFills[i].sellOrderId == refFills[i].sellOrderId);
+        CHECK(shardedFills[i].symbolPacked == refFills[i].symbolPacked);
         CHECK(shardedFills[i].price == refFills[i].price);
         CHECK(shardedFills[i].qty == refFills[i].qty);
         CHECK(shardedFills[i].timestamp == refFills[i].timestamp);

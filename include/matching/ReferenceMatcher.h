@@ -94,6 +94,7 @@ private:
             f.price = best->price;
             f.qty = qty;
             f.timestamp = ts;
+            f.symbolPacked = incoming.symbolPacked;
             m_fills.push_back(f);
 
             if (best->remainingQty() == 0) m_book.erase(best);
