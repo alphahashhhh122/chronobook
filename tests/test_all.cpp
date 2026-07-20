@@ -143,12 +143,14 @@ static void test_protocol_roundtrip() {
     CHECK(b.sequence==7 && b.orderId==42 && b.price==10050 && b.qty==99);
     CHECK(b.msgType==MsgType::ADD && b.side==(uint8_t)Side::SELL && b.orderType==(uint8_t)OrderType::IOC);
     CHECK(b.symbolPacked==0xABCD);
-    FeedMessage c=makeCancel(8,42); FeedMessage d=makeModify(9,42,10060,55);
-    CHECK(c.msgType==MsgType::CANCEL && d.msgType==MsgType::MODIFY && d.price==10060 && d.qty==55);
+    FeedMessage c=makeCancel(8,42,0xABCD); FeedMessage d=makeModify(9,42,10060,55,0xABCD);
+    CHECK(c.msgType==MsgType::CANCEL && c.symbolPacked==0xABCD &&
+          d.msgType==MsgType::MODIFY && d.symbolPacked==0xABCD &&
+          d.price==10060 && d.qty==55);
 }
 static void test_parser_and_partial_frame() {
     std::vector<FeedMessage> msgs{ makeAdd(1,1,Side::BUY,OrderType::LIMIT,100,10,0),
-                                   makeCancel(2,1), makeModify(3,1,101,5) };
+                                    makeCancel(2,1,0), makeModify(3,1,101,5,0) };
     auto bytes=FeedParser::encodeAll(msgs);
     size_t consumed=0; auto parsed=FeedParser::parseBuffer(bytes.data(),bytes.size(),&consumed);
     CHECK(parsed.size()==3 && consumed==bytes.size());
@@ -179,7 +181,7 @@ static void test_feed_validation_and_strict_file_read() {
 
     const char* path = "chronobook_partial_feed.bin";
     std::remove(path);
-    CHECK(FeedParser::writeFile(path, std::vector<FeedMessage>{makeCancel(1,1)}));
+    CHECK(FeedParser::writeFile(path, std::vector<FeedMessage>{makeCancel(1,1,0)}));
     {
         std::ofstream out(path, std::ios::binary | std::ios::app);
         const char extra[3]{'x','y','z'};
@@ -207,15 +209,17 @@ static void test_queue_concurrent() {
     CHECK(sum==(long long)N*(N+1)/2);                              // every item exactly once
 }
 static void test_generator_determinism() {
-    FeedConfig cfg; cfg.numMessages=5000; cfg.seed=123;
+    FeedConfig cfg; cfg.numMessages=5000; cfg.seed=123; cfg.symbolPacked=0x4141504cULL;
     auto a=FeedGenerator(cfg).generate();
     auto b=FeedGenerator(cfg).generate();
     CHECK(a.size()==b.size());
     bool same=true; for(size_t i=0;i<a.size();++i){
-        if(a[i].sequence!=b[i].sequence||a[i].orderId!=b[i].orderId||a[i].price!=b[i].price||
-           a[i].qty!=b[i].qty||a[i].msgType!=b[i].msgType||a[i].side!=b[i].side){ same=false; break; }
+        if(a[i].sequence!=b[i].sequence||a[i].orderId!=b[i].orderId||a[i].symbolPacked!=b[i].symbolPacked||
+            a[i].price!=b[i].price||a[i].qty!=b[i].qty||a[i].msgType!=b[i].msgType||
+            a[i].side!=b[i].side){ same=false; break; }
     }
     CHECK(same);                                                  // same seed -> identical
+    for (const auto& msg : a) CHECK(msg.symbolPacked == cfg.symbolPacked);
     FeedConfig cfg2=cfg; cfg2.seed=124; auto c=FeedGenerator(cfg2).generate();
     bool diff=false; for(size_t i=0;i<a.size();++i) if(a[i].orderId!=c[i].orderId){diff=true;break;}
     CHECK(diff);                                                  // different seed -> different
@@ -257,7 +261,7 @@ static void test_replay_determinism() {
 static void test_replay_modify_preserves_side() {
     std::vector<FeedMessage> feed{
         makeAdd(1,1,Side::SELL,OrderType::LIMIT,100,10,0),
-        makeModify(2,1,105,10),
+        makeModify(2,1,105,10,0),
         makeAdd(3,2,Side::BUY,OrderType::LIMIT,104,10,0)
     };
     OrderPool p(64); MatchingEngine e(p); ReplayEngine r(e,p);
@@ -428,7 +432,7 @@ static void test_recovery_reconciles_feed_journal_and_store() {
         makeAdd(2,2,Side::SELL,OrderType::LIMIT,101,30,0),
         makeAdd(3,3,Side::BUY, OrderType::LIMIT,101,50,0),
         makeAdd(4,4,Side::BUY, OrderType::LIMIT, 99,10,0),
-        makeCancel(5,4),
+        makeCancel(5,4,0),
         makeAdd(6,5,Side::BUY, OrderType::MARKET,0,20,0)
     };
 
@@ -537,10 +541,10 @@ static void test_reference_matcher_diff() {
         makeAdd(2,2,Side::SELL,OrderType::LIMIT,100,40,0),
         makeAdd(3,3,Side::BUY, OrderType::LIMIT,100,50,0),
         makeAdd(4,4,Side::BUY, OrderType::LIMIT, 99,10,0),
-        makeCancel(5,4),
+        makeCancel(5,4,0),
         makeAdd(6,5,Side::BUY, OrderType::MARKET,0,30,0),
         makeAdd(7,6,Side::SELL,OrderType::LIMIT,105,10,0),
-        makeModify(8,6,106,10),
+        makeModify(8,6,106,10,0),
         makeAdd(9,7,Side::BUY, OrderType::LIMIT,106,10,0)
     };
 
@@ -616,14 +620,14 @@ static void test_reference_matcher_randomized_diff() {
             if (!candidates.empty() && roll < 18) {
                 std::uniform_int_distribution<size_t> pick(0, candidates.size() - 1);
                 const size_t idx = pick(rng);
-                feed.push_back(makeCancel(seq, candidates[idx]));
+                feed.push_back(makeCancel(seq, candidates[idx], 0));
                 candidates[idx] = candidates.back();
                 candidates.pop_back();
             } else if (!candidates.empty() && roll < 30) {
                 std::uniform_int_distribution<size_t> pick(0, candidates.size() - 1);
                 feed.push_back(makeModify(seq, candidates[pick(rng)],
-                                          static_cast<uint32_t>(priceDist(rng)),
-                                          static_cast<uint32_t>(qtyDist(rng))));
+                                           static_cast<uint32_t>(priceDist(rng)),
+                                           static_cast<uint32_t>(qtyDist(rng)), 0));
             } else {
                 const Side side = sideDist(rng) == 0 ? Side::BUY : Side::SELL;
                 OrderType type = OrderType::LIMIT;
@@ -724,6 +728,79 @@ static void test_sharded_multi_symbol_independent_fills() {
     CHECK(found200);
 }
 
+static size_t testShardIndex(uint64_t symbolPacked, size_t numShards) {
+    uint64_t h = symbolPacked;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    return static_cast<size_t>(h % numShards);
+}
+
+static void test_reference_matcher_multi_symbol_isolation() {
+    constexpr uint64_t alpha = 0x4141504cULL;
+    constexpr uint64_t beta = 0x4d534654ULL;
+    std::vector<FeedMessage> feed{
+        makeAdd(1, 1, Side::SELL, OrderType::LIMIT, 100, 10, alpha),
+        makeAdd(2, 2, Side::BUY,  OrderType::LIMIT, 100, 10, beta),
+        makeAdd(3, 3, Side::BUY,  OrderType::LIMIT, 100, 10, alpha),
+    };
+
+    ReferenceMatcher reference;
+    const auto fills = reference.run(feed);
+    CHECK(fills.size() == 1);
+    CHECK(fills[0].buyOrderId == 3 && fills[0].sellOrderId == 1);
+    CHECK(fills[0].symbolPacked == alpha);
+}
+
+static void test_sharded_multi_symbol_cancel_modify_lifecycle() {
+    constexpr size_t shardCount = 4;
+    const size_t zeroShard = testShardIndex(0, shardCount);
+    uint64_t alpha = 0;
+    uint64_t beta = 0;
+    size_t alphaShard = 0;
+
+    for (uint64_t candidate = 1; candidate < 1000 && beta == 0; ++candidate) {
+        const size_t shard = testShardIndex(candidate, shardCount);
+        if (alpha == 0 && shard != zeroShard) {
+            alpha = candidate;
+            alphaShard = shard;
+        } else if (alpha != 0 && shard != zeroShard && shard != alphaShard) {
+            beta = candidate;
+        }
+    }
+    CHECK(alpha != 0 && beta != 0);
+
+    std::vector<FeedMessage> feed{
+        makeAdd(1, 11, Side::SELL, OrderType::LIMIT, 100, 10, alpha),
+        makeAdd(2, 21, Side::SELL, OrderType::LIMIT, 200, 10, beta),
+        makeCancel(3, 11, alpha),
+        makeModify(4, 21, 150, 10, beta),
+        makeAdd(5, 12, Side::BUY, OrderType::LIMIT, 100, 10, alpha),
+        makeAdd(6, 22, Side::BUY, OrderType::LIMIT, 150, 10, beta),
+    };
+
+    ReferenceMatcher reference;
+    const auto expected = reference.run(feed);
+    CHECK(expected.size() == 1);
+    CHECK(expected[0].buyOrderId == 22 && expected[0].sellOrderId == 21);
+    CHECK(expected[0].price == 150 && expected[0].symbolPacked == beta);
+
+    ShardedEngine sharded(shardCount, 1024, 256);
+    sharded.start();
+    for (const auto& msg : feed) {
+        while (!sharded.route(msg)) std::this_thread::yield();
+    }
+    sharded.stop();
+    const auto fills = sharded.collectAllFills();
+
+    CHECK(sharded.totalProcessed() == feed.size());
+    CHECK(fills.size() == expected.size());
+    CHECK(fills[0].buyOrderId == expected[0].buyOrderId);
+    CHECK(fills[0].sellOrderId == expected[0].sellOrderId);
+    CHECK(fills[0].price == expected[0].price && fills[0].qty == expected[0].qty);
+    CHECK(fills[0].symbolPacked == expected[0].symbolPacked);
+}
+
 static void test_sharded_start_stop_restart() {
     ShardedEngine sharded(2, 1024, 256);
 
@@ -772,6 +849,8 @@ int main(){
     test_sharded_single_symbol_matches_reference();
     test_sharded_no_cross_symbol_match();
     test_sharded_multi_symbol_independent_fills();
+    test_reference_matcher_multi_symbol_isolation();
+    test_sharded_multi_symbol_cancel_modify_lifecycle();
     test_sharded_start_stop_restart();
     printf("ALL %d CHECKS PASSED\n", g_tests);
     return 0;

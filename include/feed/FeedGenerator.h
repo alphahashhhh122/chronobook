@@ -54,7 +54,7 @@ public:
             if (doCancel) {
                 std::uniform_int_distribution<size_t> pick(0, live.size() - 1);
                 const size_t idx = pick(m_rng);
-                msgs.push_back(makeCancel(seq, live[idx]));
+                msgs.push_back(makeCancel(seq, live[idx], m_cfg.symbolPacked));
                 live[idx] = live.back();  // O(1) swap-remove
                 live.pop_back();
             } else {

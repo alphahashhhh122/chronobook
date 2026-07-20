@@ -76,7 +76,8 @@ private:
 
     void match(RestingOrder& incoming, OrderType type, uint64_t ts) {
         while (incoming.remainingQty() > 0) {
-            auto best = bestOpposite(incoming.side, incoming.price, type);
+            auto best = bestOpposite(incoming.symbolPacked, incoming.side,
+                                     incoming.price, type);
             if (best == m_book.end()) return;
 
             const uint32_t qty = std::min(incoming.remainingQty(), best->remainingQty());
@@ -101,12 +102,14 @@ private:
         }
     }
 
-    std::vector<RestingOrder>::iterator bestOpposite(Side incomingSide,
-                                                     uint32_t incomingPrice,
-                                                     OrderType type) {
+    std::vector<RestingOrder>::iterator bestOpposite(uint64_t incomingSymbol,
+                                                      Side incomingSide,
+                                                      uint32_t incomingPrice,
+                                                      OrderType type) {
         auto best = m_book.end();
         for (auto it = m_book.begin(); it != m_book.end(); ++it) {
-            if (it->side == incomingSide || it->remainingQty() == 0) continue;
+            if (it->symbolPacked != incomingSymbol || it->side == incomingSide ||
+                it->remainingQty() == 0) continue;
             if (type != OrderType::MARKET) {
                 const bool crosses = incomingSide == Side::BUY
                     ? it->price <= incomingPrice

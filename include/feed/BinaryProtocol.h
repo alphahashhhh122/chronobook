@@ -25,7 +25,9 @@ enum class MsgType : uint8_t { ADD = 0, CANCEL = 1, MODIFY = 2 };
 // Layout (verified by static_assert):
 //   sequence     8   monotonic feed sequence number (also the fill timestamp)
 //   orderId      8   target order id
-//   symbolPacked 8   8-char symbol (ADD/MODIFY); 0 for CANCEL
+//   symbolPacked 8   8-char symbol for every message. CANCEL and MODIFY carry
+//                    the original order symbol so a symbol-sharded router can
+//                    send the request to the worker that owns the order.
 //   price        4   ticks (ADD/MODIFY new price); 0 for CANCEL / MARKET
 //   qty          4   quantity (ADD original qty / MODIFY new qty); 0 for CANCEL
 //   msgType      1   ADD / CANCEL / MODIFY
@@ -72,13 +74,17 @@ inline FeedMessage makeAdd(uint64_t seq, uint64_t id, Side side, OrderType type,
     m.orderType = static_cast<uint8_t>(type);
     return m;
 }
-inline FeedMessage makeCancel(uint64_t seq, uint64_t id) noexcept {
-    FeedMessage m; m.sequence = seq; m.orderId = id; m.msgType = MsgType::CANCEL; return m;
+inline FeedMessage makeCancel(uint64_t seq, uint64_t id, uint64_t symbolPacked) noexcept {
+    FeedMessage m;
+    m.sequence = seq; m.orderId = id; m.symbolPacked = symbolPacked;
+    m.msgType = MsgType::CANCEL;
+    return m;
 }
 inline FeedMessage makeModify(uint64_t seq, uint64_t id, uint32_t newPrice,
-                              uint32_t newQty) noexcept {
+                               uint32_t newQty, uint64_t symbolPacked) noexcept {
     FeedMessage m;
-    m.sequence = seq; m.orderId = id; m.price = newPrice; m.qty = newQty;
+    m.sequence = seq; m.orderId = id; m.symbolPacked = symbolPacked;
+    m.price = newPrice; m.qty = newQty;
     m.msgType = MsgType::MODIFY;
     return m;
 }

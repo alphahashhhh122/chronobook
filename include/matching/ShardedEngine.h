@@ -92,8 +92,9 @@ public:
         m_running.store(false, std::memory_order_release);
     }
 
-    // Route a single message to the shard that owns its symbol. Returns false
-    // if the shard's ring is full.
+    // Route a single message to the shard that owns its symbol. CANCEL and
+    // MODIFY must carry the original order symbol. Returns false if the
+    // shard's ring is full.
     bool route(const FeedMessage& msg) noexcept {
         const size_t idx = shardIndex(msg.symbolPacked);
         return m_shards[idx]->inbox.tryPush(msg);
