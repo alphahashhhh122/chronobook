@@ -8,3 +8,18 @@ build-*/
 *.exe
 *.obj
 *.lib
+
+# CMake / Visual Studio in-source build artifacts
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.dir/
+/x64/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+*.tlog
+*.recipe
+*.lastbuildstate
