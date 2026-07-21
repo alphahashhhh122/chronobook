@@ -1,5 +1,17 @@
 build/
 build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+*.dir/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+x64/
+Debug/
+Release/
 *.db
 *.db-wal
 *.db-shm
