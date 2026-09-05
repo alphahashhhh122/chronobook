@@ -85,7 +85,7 @@ Core components:
 The dynamic path is loaded at runtime so the default build has no link-time
 SQLite dependency.
 
-## Build And Test
+## Build and test
 
 ChronoBook requires a 64-bit C++17 compiler and CMake.
 
@@ -95,13 +95,8 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The current Windows Release build passes the assert-based test suite:
-
-```text
-100% tests passed, 0 tests failed out of 1
-```
-
-The tests cover order layout, allocator reuse, price-level FIFO behavior,
+GitHub Actions builds the project and runs the test suite on 64-bit Linux and
+Windows. The tests cover order layout, allocator reuse, price-level FIFO behavior,
 matching semantics, parser framing, deterministic replay, queue handoff,
 analytics, latency histograms, mmap journal replay, SPSC durability pipeline,
 feed/journal/store recovery reconciliation, trade-store rollback, connection
@@ -126,6 +121,8 @@ throughput, per-operation `rdtscp` latency, semaphore behavior, page-fault
 effects, trade-store insert/query throughput, and sharded multi-symbol routing.
 Results are machine-dependent; the programs print the command-line workload and
 measured rates so runs can be recorded with the environment that produced them.
+No benchmark number should be compared across machines without recording the
+CPU, operating system, compiler, build type, and workload.
 
 ## Repository Layout
 
@@ -141,3 +138,7 @@ bench/              benchmark and smoke-test executables
 tools/              feed generator and trade query CLIs
 tests/              assert-based correctness suite
 ```
+
+The binary feed and journal formats are intentionally host-endian. They are
+designed for deterministic replay on the same architecture, not as portable
+network protocols.
